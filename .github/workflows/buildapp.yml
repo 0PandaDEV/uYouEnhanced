@@ -1,62 +1,80 @@
-# Original idea by @ISnackable. Thanks to him for handling the hardest parts!
-# https://github.com/ISnackable/YTCubePlus/blob/main/.github/workflows/Build.yml
-
 name: Build and Release uYouEnhanced
 
 on:
+  schedule:
+    - cron: '0 0 * * *'  # Run daily at midnight UTC
   workflow_dispatch:
     inputs:
       sdk_version:
-        description: "iOS SDK Version"
         default: "16.5"
+        description: "iOS SDK Version"
         required: true
         type: string
       uyou_version:
-        description: "uYou Version"
         default: "3.0.4"
-        required: true
-        type: string
-      decrypted_youtube_url:
-        description: "Direct URL of the decrypted YouTube IPA"
-        default: ""
-        required: true
-        type: string
-      bundle_id:
-        description: "Modify the bundle ID"
-        default: "com.google.ios.youtube"
+        description: "uYou Version"
         required: true
         type: string
       app_name:
-        description: "Modify the app name"
         default: "YouTube"
+        description: "Modify the app name"
+        required: true
+        type: string
+      bundle_id:
+        default: "com.google.ios.youtube"
+        description: "Modify the bundle ID"
         required: true
         type: string
       commit_id:
-        description: "(Optional) Commit ID to build at"
         default: ""
+        description: "(Optional) Commit ID to build at"
         required: false
         type: string
-      upload_artifact:
-        description: "Upload IPA as artifact"
-        default: false
-        required: false
-        type: boolean
       create_release:
-        description: "Create a draft release"
         default: true
+        description: "Create a draft release"
         required: false
         type: boolean
-  
+      upload_artifact:
+        default: false
+        description: "Upload IPA as artifact"
+        required: false
+        type: boolean
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
+  check_upstream:
+    name: Check Upstream Changes
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.check_changes.outputs.has_changes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.1.7
+        with:
+          fetch-depth: 0
+
+      - name: Check for upstream changes
+        id: check_changes
+        run: |
+          git remote add upstream https://github.com/original/repo.git
+          git fetch upstream
+          if [ -n "$(git log HEAD..upstream/main --oneline)" ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          fi
+
   build:
     name: Build uYouEnhanced
-    runs-on: macos-12
+    needs: check_upstream
+    if: needs.check_upstream.outputs.has_changes == 'true' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
+    runs-on: macos-12
 
     steps:
       - name: Checkout Main
@@ -66,8 +84,24 @@ jobs:
           ref: ${{ github.event.inputs.commit_id || github.ref }}
           submodules: recursive
 
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Get Decrypted YouTube URL
+        id: get_url
+        run: |
+          DECRYPTED_URL=$(python .github/scripts/arm.py)
+          echo "decrypted_url=$DECRYPTED_URL" >> $GITHUB_OUTPUT
+
       - name: Install Dependencies
-        run: brew install ldid dpkg make
+        run: brew install dpkg ldid make
 
       - name: Set PATH environment variable
         run: echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH 
@@ -75,9 +109,9 @@ jobs:
       - name: Setup Theos
         uses: actions/checkout@v4.1.7
         with:
-          repository: theos/theos
-          ref: 5bfdc3cb7133ec1cab43182115d902e2b57c9eac
           path: theos
+          ref: 5bfdc3cb7133ec1cab43182115d902e2b57c9eac
+          repository: theos/theos
           submodules: recursive
       
       - name: SDK Caching
@@ -86,8 +120,8 @@ jobs:
         env:
           cache-name: iOS-${{ inputs.sdk_version }}-SDK
         with:
-          path: theos/sdks/
           key: ${{ env.cache-name }}
+          path: theos/sdks/
           restore-keys: ${{ env.cache-name }}
 
       - name: Download iOS SDK
@@ -104,9 +138,9 @@ jobs:
       - name: Setup Theos Jailed
         uses: actions/checkout@v4.1.7
         with:
-          repository: qnblackcat/theos-jailed
-          ref: master
           path: theos-jailed
+          ref: master
+          repository: qnblackcat/theos-jailed
           submodules: recursive
 
       - name: Install Theos Jailed
@@ -126,28 +160,26 @@ jobs:
           echo "==> YouTube v$youtube_version downloaded!"
           sed -i '' "17s#.*#YOUTUBE_VERSION = ${youtube_version}#g" Makefile
           echo "youtube_version=${youtube_version}" >> $GITHUB_OUTPUT
-
         env:
           THEOS: ${{ github.workspace }}/theos
-          YOUTUBE_URL: ${{ inputs.decrypted_youtube_url }}
+          YOUTUBE_URL: ${{ steps.get_url.outputs.decrypted_url }}
 
       - name: Fix compiling & Build Package
         id: build_package
         run: |
           cd ${{ github.workspace }}/main
-          sed -i '' "27s#.*#BUNDLE_ID = ${{ env.BUNDLE_ID }}#g" Makefile                          # Modify the bundle ID
-          sed -i '' "26s#.*#DISPLAY_NAME = ${{ env.APP_NAME }}#g" Makefile                        # Modify the app name
-          sed -i '' "1s#.*#export TARGET = iphone:clang:${{ inputs.sdk_version }}:14.0#g" Makefile # Modify the SDK version
+          sed -i '' "27s#.*#BUNDLE_ID = ${{ env.BUNDLE_ID }}#g" Makefile
+          sed -i '' "26s#.*#DISPLAY_NAME = ${{ env.APP_NAME }}#g" Makefile
+          sed -i '' "1s#.*#export TARGET = iphone:clang:${{ inputs.sdk_version }}:14.0#g" Makefile
           make package THEOS_PACKAGE_SCHEME=rootless IPA=Payload/YouTube.app FINALPACKAGE=1
           echo "package=$(ls -t packages | head -n1)" >>$GITHUB_OUTPUT
           echo -e "==> \033[1mSHASUM256: $(shasum -a 256 packages/*.ipa | cut -f1 -d' ')\033[0m"
           echo -e "==> \033[1mBundle ID: ${{ env.BUNDLE_ID }}\033[0m"
-
         env:
+          APP_NAME: ${{ inputs.app_name }}
+          BUNDLE_ID: ${{ inputs.bundle_id }}
           THEOS: ${{ github.workspace }}/theos
           UYOU_VERSION: ${{ inputs.uyou_version }}
-          BUNDLE_ID: ${{ inputs.bundle_id }}
-          APP_NAME: ${{ inputs.app_name }}
 
       - name: Upload Artifact
         if: ${{ inputs.upload_artifact }}
@@ -156,9 +188,9 @@ jobs:
           UYOU_VERSION: ${{ inputs.uyou_version }}
           YOUTUBE_VERSION: ${{ steps.prepare_youtube.outputs.youtube_version }}
         with:
+          if-no-files-found: error
           name: uYouEnhanced_${{ env.YOUTUBE_VERSION }}_${{ env.UYOU_VERSION }}
           path: ${{ github.workspace }}/main/packages/${{ steps.build_package.outputs.package }}
-          if-no-files-found: error
 
       - name: Create Release
         if: ${{ inputs.create_release }}
@@ -169,7 +201,7 @@ jobs:
           UYOU_VERSION: ${{ inputs.uyou_version }}
           YOUTUBE_VERSION: ${{ steps.prepare_youtube.outputs.youtube_version }}
         with:
-          tag_name: v${{ env.YOUTUBE_VERSION }}-${{ env.UYOU_VERSION }}-(${{ github.run_number }})
-          name: v${{ env.YOUTUBE_VERSION }}-${{ env.UYOU_VERSION }}-(${{ github.run_number }})
-          files: main/packages/*.ipa
           draft: true
+          files: main/packages/*.ipa
+          name: v${{ env.YOUTUBE_VERSION }}-${{ env.UYOU_VERSION }}-(${{ github.run_number }})
+          tag_name: v${{ env.YOUTUBE_VERSION }}-${{ env.UYOU_VERSION }}-(${{ github.run_number }})
