@@ -97,7 +97,7 @@ jobs:
       - name: Get Decrypted YouTube URL
         id: get_url
         run: |
-          DECRYPTED_URL=$(python .github/scripts/arm.py)
+          DECRYPTED_URL=$(python main/.github/scripts/arm.py)
           echo "decrypted_url=$DECRYPTED_URL" >> $GITHUB_OUTPUT
 
       - name: Install Dependencies
