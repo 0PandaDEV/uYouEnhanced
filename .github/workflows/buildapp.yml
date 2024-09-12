@@ -60,7 +60,7 @@ jobs:
       - name: Check for upstream changes
         id: check_changes
         run: |
-          git remote add upstream https://github.com/original/repo.git
+          git remote add upstream https://github.com/arichornloverALT/uYouEnhanced.git
           git fetch upstream
           if [ -n "$(git log HEAD..upstream/main --oneline)" ]; then
             echo "has_changes=true" >> $GITHUB_OUTPUT
