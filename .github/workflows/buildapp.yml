@@ -1,8 +1,6 @@
 name: Build and Release uYouEnhanced
 
 on:
-  schedule:
-    - cron: '0 0 * * *'  # Run daily at midnight UTC
   workflow_dispatch:
     inputs:
       sdk_version:
